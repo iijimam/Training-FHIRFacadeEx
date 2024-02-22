@@ -1,0 +1,1466 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Export generator="IRIS" version="26" zv="IRIS for UNIX (Ubuntu Server LTS for x86-64 Containers) 2024.1 (Build 238U)" ts="2024-02-22 14:11:29">
+<Class name="CSVtoFHIR.BP.LabTestBatchProcess">
+<ClassType>persistent</ClassType>
+<Super>Ens.BusinessProcess</Super>
+<TimeChanged>66357,54931.7280103</TimeChanged>
+<TimeCreated>66290,76866.4362801</TimeCreated>
+
+<Property name="TargetConfigName">
+<Description>
+情報送付先コンポーネント名指定</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="255"/>
+</Property>
+
+<Property name="FHIREndpoint">
+<Description>
+FHIRエンドポイントのパスを指定します（必須）</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="512"/>
+</Property>
+
+<Property name="IdentifierSystem">
+<Description>
+Patientリソースを検索するときのIdentifier.systemの値</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="512"/>
+</Property>
+
+<Parameter name="SETTINGS">
+<Default><![CDATA[FHIREndpoint:CSVFHIR変換用設定:selector?context={HS.FHIRServer.Util.ContextSearch/FHIRServerEndpoints},TargetConfigName:CSVFHIR変換用設定:selector?context={Ens.ContextSearch/ProductionItems?targets=1&productionName=@productionId},IdentifierSystem:CSVFHIR変換用設定]]></Default>
+</Parameter>
+
+<Method name="OnRequest">
+<FormalSpec>pRequest:CSVtoFHIR.RM.LabTestBatch,*pResponse:HS.FHIRServer.Interop.Response</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+    #dim ex As %Exception.AbstractException
+    set status=$$$OK
+    try {
+	    set recordcnt=pRequest.Records.Count()
+		set pidstring=""
+		for i=1:1:recordcnt {
+			set pid=pRequest.Records.GetAt(i).PatientId
+			//新規のPIDか、すでに他の行で処理したPIDかチェックする
+			if $Get(pidTemp("PatientMap",pid))'="Patient" {	
+				set pidTemp("PatientMap",pid)="Patient"	
+				set pidstring=pidstring_pid_","
+			}
+		}
+        //患者名検索
+        set searchRequest=##class(HS.FHIRServer.Interop.Request).%New()
+        set searchRequest.Request.RequestMethod="GET"
+        set searchRequest.Request.RequestPath="Patient"
+        set searchRequest.Request.QueryString="identifier="_..IdentifierSystem_"|"_pidstring
+        set searchRequest.Request.RequestFormatCode="JSON"
+        set searchRequest.Request.ResponseFormatCode="JSON"
+        set searchRequest.Request.SessionApplication=..FHIREndpoint
+		set searchRequest.Request.BaseURL=..FHIREndpoint
+        #dim searchResponse As HS.FHIRServer.Interop.Response
+        $$$ThrowOnError(..SendRequestSync(..TargetConfigName,searchRequest,.searchResponse))
+
+        //検索エラーだった場合Catchへ移動
+        if searchResponse.Response.Status'="200" {
+			//ステータスエラーを作成してcatchへ移動
+            set outcome=##class(HS.SDA3.QuickStream).%OpenId(searchResponse.QuickStreamId)
+            throw ##class(%Exception.General).%New("FHIR OperationOutcome",,,outcome.Read())
+        }
+        
+        //検索結果からPatientリソースを確認
+        set searchResultQS=##class(HS.SDA3.QuickStream).%OpenId(searchResponse.QuickStreamId)
+        //QuickStreamからJSONに変換
+        set patJSON={}.%FromJSON(searchResultQS)
+
+        if patJSON.total > 0 {
+			//1件目の患者情報の内部IDを参照用に使う
+			set iter=patJSON.entry.%GetIterator()
+			while(iter.%GetNext(.key,.patient)) {
+				set pid=patient.resource.identifier.%Get(0).value
+				set pidTemp("PatientMap",pid)="Patient/"_patient.resource.id		
+			}
+        }
+		set bundle=##class(FHIRCustom.BundleTransaction).%New()
+			
+		//Observationリソースに変換しBundleに格納する
+		for i=1:1:recordcnt {
+			//CSV入力のLabTest情報をFHIRのObservationリソースに変数するデータ変換を呼び出す
+			$$$ThrowOnError(##class(CSVtoFHIR.Transform).Observation(pRequest.Records.GetAt(i),.observation,.pidTemp))
+			
+			// ObservationのHTTPメソッドをURLを指定
+			set observation.requestMethod="POST"
+			set observation.requestUrl="Observation"
+			// BundleにObservationを登録
+            do bundle.resource.Insert(observation)
+            kill observation
+		}
+	
+		$$$ThrowOnError(bundle.OutputToDynamicObject(.bundleJSON))
+
+        $$$TRACE(bundleJSON.%ToJSON())
+        //検証実行
+        $$$ThrowOnError(##class(CSVtoFHIR.Utils).Validate(bundleJSON))
+
+        //BundleをQuickStreamに登録
+        set bundleQS=##class(HS.SDA3.QuickStream).%New()
+        do bundleJSON.%ToJSON(bundleQS)
+        //先頭ポジションに戻ります（必須）
+        do bundleQS.Rewind()
+
+        set fhirRequest=##class(HS.FHIRServer.Interop.Request).%New()
+        set fhirRequest.Request.RequestMethod="POST"
+        set fhirRequest.Request.RequestPath="/"
+        set fhirRequest.Request.RequestFormatCode="JSON"
+        set fhirRequest.Request.ResponseFormatCode="JSON"
+        set fhirRequest.Request.SessionApplication=..FHIREndpoint
+        set fhirRequest.QuickStreamId=bundleQS.%Id()
+        $$$ThrowOnError(..SendRequestSync(..TargetConfigName,fhirRequest,.pResponse))
+
+        if pResponse.Response.Status'="200" {
+			//ステータスエラーを作成してcatchへ移動
+            set outcome=##class(HS.SDA3.QuickStream).%OpenId(pResponse.QuickStreamId)
+            throw ##class(%Exception.General).%New("FHIR OperationOutcome",,,outcome.Read())
+        }
+
+    }
+    catch ex {
+        set status=ex.AsStatus()
+    }
+    return status
+]]></Implementation>
+</Method>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DefaultData>LabTestBatchProcessDefaultData</DefaultData>
+<Data name="LabTestBatchProcessDefaultData">
+<Subscript>"LabTestBatchProcess"</Subscript>
+<Value name="1">
+<Value>TargetConfigName</Value>
+</Value>
+<Value name="2">
+<Value>FHIREndpoint</Value>
+</Value>
+<Value name="3">
+<Value>IdentifierSystem</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+
+
+<Class name="CSVtoFHIR.BP.PatientProcess">
+<ClassType>persistent</ClassType>
+<Super>Ens.BusinessProcess</Super>
+<TimeChanged>66634,74730.8030245</TimeChanged>
+<TimeCreated>66290,60625.6088321</TimeCreated>
+
+<Property name="TargetConfigName">
+<Description>
+情報送付先コンポーネント名指定</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="255"/>
+</Property>
+
+<Property name="FHIREndpoint">
+<Description>
+FHIRエンドポイントのパスを指定します（必須）</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="512"/>
+</Property>
+
+<Parameter name="SETTINGS">
+<Default><![CDATA[FHIREndpoint:CSVFHIR変換用設定:selector?context={HS.FHIRServer.Util.ContextSearch/FHIRServerEndpoints},TargetConfigName:CSVFHIR変換用設定:selector?context={Ens.ContextSearch/ProductionItems?targets=1&productionName=@productionId}]]></Default>
+</Parameter>
+
+<Method name="OnRequest">
+<FormalSpec>pRequest:CSVtoFHIR.RM.Patient.Record,*pResponse:HS.FHIRServer.Interop.Response</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+    #dim ex As %Exception.AbstractException
+    #dim patient As FHIRTemplate.Patient
+    set status=$$$OK
+    Try {
+        //$$$ThrowOnError(##class(CSVtoFHIR.Transform).Patient(pRequest,.patient))
+		$$$ThrowOnError(##class(CSVtoFHIR.DTL.Patient).Transform(pRequest,.patient))
+        $$$ThrowOnError(patient.OutputToDynamicObject(.patjson))
+
+        //検証実行
+        $$$ThrowOnError(##class(CSVtoFHIR.Utils).Validate(patjson))
+        
+        //QuickStreamに作成したPatientリソースを保存
+        set QS=##class(HS.SDA3.QuickStream).%New()
+        set quickStreamId=QS.%Id()
+        //作成したPatientリソースをストリームに出力
+        $$$ThrowOnError(patient.OutputToStream(QS))
+        //先頭ポジションに戻ります（必須）
+        do QS.Rewind()
+
+        set fhirRequest=##class(HS.FHIRServer.Interop.Request).%New()
+        set fhirRequest.Request.RequestMethod="POST"
+        set fhirRequest.Request.RequestPath="Patient"
+        set fhirRequest.Request.RequestFormatCode="JSON"
+        set fhirRequest.Request.ResponseFormatCode="JSON"
+        set fhirRequest.Request.SessionApplication=..FHIREndpoint
+        set fhirRequest.QuickStreamId=quickStreamId
+
+        $$$ThrowOnError(..SendRequestSync(..TargetConfigName,fhirRequest,.pResponse))
+
+        if pResponse.Response.Status'="201" {
+			//ステータスエラーを作成してcatchへ移動
+            set outcome=##class(HS.SDA3.QuickStream).%OpenId(pResponse.QuickStreamId)
+            throw ##class(%Exception.General).%New("FHIR OperationOutcome",,,outcome.Read())
+        }
+    }
+    Catch ex {
+        Set status=ex.AsStatus()
+    }
+    return status
+]]></Implementation>
+</Method>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DefaultData>PatientProcessDefaultData</DefaultData>
+<Data name="PatientProcessDefaultData">
+<Subscript>"PatientProcess"</Subscript>
+<Value name="1">
+<Value>TargetConfigName</Value>
+</Value>
+<Value name="2">
+<Value>FHIREndpoint</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+
+
+<Class name="CSVtoFHIR.DTL.Patient">
+<Super>Ens.DataTransformDTL</Super>
+<TimeChanged>66634,75109.744</TimeChanged>
+<TimeCreated>66634,73649.9895643</TimeCreated>
+<DependsOn>CSVtoFHIR.RM.Patient.Record,FHIRTemplate.Patient</DependsOn>
+
+<Parameter name="IGNOREMISSINGSOURCE">
+<Default>1</Default>
+</Parameter>
+
+<Parameter name="REPORTERRORS">
+<Default>1</Default>
+</Parameter>
+
+<Parameter name="TREATEMPTYREPEATINGFIELDASNULL">
+<Default>0</Default>
+</Parameter>
+
+<XData name="DTL">
+<XMLNamespace>http://www.intersystems.com/dtl</XMLNamespace>
+<Data><![CDATA[
+<transform sourceClass='CSVtoFHIR.RM.Patient.Record' targetClass='FHIRTemplate.Patient' create='new' language='objectscript' >
+<assign value='source.PatientId' property='target.PatientId' action='set' />
+<assign value='source.LastName' property='target.LastName' action='set' />
+<assign value='source.FirstName' property='target.FirstName' action='set' />
+<assign value='source.LastNameKana' property='target.LastNameKana' action='set' />
+<assign value='source.FirstNameKana' property='target.FirstNameKana' action='set' />
+<assign value='$ZDATEH(source.DOB,8)' property='target.DOB' action='set' />
+<assign value='$select(source.Gender="M":1,1:2)' property='target.Gender' action='set' />
+<assign value='source.Phone' property='target.Phone' action='set' />
+<assign value='source.postalCode' property='target.Address.postalCode' action='set' />
+<assign value='source.state' property='target.Address.state' action='set' />
+<assign value='source.city' property='target.Address.city' action='set' />
+<assign value='source.line' property='target.Address.line' action='set' />
+</transform>
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="CSVtoFHIR.Production">
+<Super>Ens.Production</Super>
+<TimeChanged>66290,77817.9860911</TimeChanged>
+<TimeCreated>66290,50564.7142621</TimeCreated>
+
+<XData name="ProductionDefinition">
+<Data><![CDATA[
+<Production Name="CSVtoFHIR.Production" TestingEnabled="true" LogGeneralTraceEvents="false">
+  <Description></Description>
+  <ActorPoolSize>2</ActorPoolSize>
+  <Item Name="HS.Util.Trace.Operations" Category="" ClassName="HS.Util.Trace.Operations" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+  </Item>
+  <Item Name="HS.FHIRServer.Interop.Operation" Category="" ClassName="HS.FHIRServer.Interop.Operation" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+    <Setting Target="Host" Name="TraceOperations">*FULL*</Setting>
+  </Item>
+  <Item Name="CSVtoFHIR.BP.PatientProcess" Category="" ClassName="CSVtoFHIR.BP.PatientProcess" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+    <Setting Target="Host" Name="FHIREndpoint">/csp/healthshare/test/fhir/r4</Setting>
+    <Setting Target="Host" Name="TargetConfigName">HS.FHIRServer.Interop.Operation</Setting>
+  </Item>
+  <Item Name="CSVPatient" Category="" ClassName="EnsLib.RecordMap.Service.FileService" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+    <Setting Target="Host" Name="RecordMap">CSVtoFHIR.RM.Patient</Setting>
+    <Setting Target="Host" Name="TargetConfigNames">CSVtoFHIR.BP.PatientProcess</Setting>
+    <Setting Target="Adapter" Name="FilePath">/opt/app/samples/In</Setting>
+  </Item>
+  <Item Name="CSVtoFHIR.BP.LabTestBatchProcess" Category="" ClassName="CSVtoFHIR.BP.LabTestBatchProcess" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+    <Setting Target="Host" Name="FHIREndpoint">/csp/healthshare/test/fhir/r4</Setting>
+    <Setting Target="Host" Name="IdentifierSystem">urn:oid:1.2.392.100495.20.3.51.11311234567</Setting>
+    <Setting Target="Host" Name="TargetConfigName">HS.FHIRServer.Interop.Operation</Setting>
+  </Item>
+  <Item Name="CSVLabTest" Category="" ClassName="EnsLib.RecordMap.Service.BatchFileService" PoolSize="1" Enabled="true" Foreground="false" Comment="" LogTraceEvents="false" Schedule="">
+    <Setting Target="Host" Name="BatchClass">CSVtoFHIR.RM.LabTestBatch</Setting>
+    <Setting Target="Host" Name="BatchHandling">Whole</Setting>
+    <Setting Target="Host" Name="RecordMap">CSVtoFHIR.RM.LabTest</Setting>
+    <Setting Target="Host" Name="TargetConfigNames">CSVtoFHIR.BP.LabTestBatchProcess</Setting>
+    <Setting Target="Adapter" Name="FilePath">/opt/app/samples/LabTestIn</Setting>
+  </Item>
+</Production>
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="CSVtoFHIR.RM.LabTest.Record">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+RECORDMAP: Generated from RecordMap 'CSVtoFHIR.RM.LabTest'
+on 2024-02-22 at 14:00:34.896 [2024-02-22 05:00:34.896 UTC]
+by user SuperUser]]></Description>
+<ProcedureBlock>1</ProcedureBlock>
+<Super>%Persistent,%XML.Adaptor,Ens.Request,EnsLib.RecordMap.Base,%JSON.Adaptor</Super>
+<TimeChanged>66892,50434.899407417</TimeChanged>
+<TimeCreated>66892,50434.896036879</TimeCreated>
+<Inheritance>right</Inheritance>
+
+<Parameter name="INCLUDETOPFIELDS">
+<Default>1</Default>
+</Parameter>
+
+<Property name="PatientId">
+<Type>%String</Type>
+<SqlColumnNumber>2</SqlColumnNumber>
+</Property>
+
+<Property name="code">
+<Type>%String</Type>
+<SqlColumnNumber>3</SqlColumnNumber>
+</Property>
+
+<Property name="display">
+<Type>%String</Type>
+<SqlColumnNumber>4</SqlColumnNumber>
+</Property>
+
+<Property name="value">
+<Type>%String</Type>
+<SqlColumnNumber>5</SqlColumnNumber>
+</Property>
+
+<Property name="unit">
+<Type>%String</Type>
+<SqlColumnNumber>6</SqlColumnNumber>
+</Property>
+
+<Property name="EffectiveDateTime">
+<Type>%String</Type>
+<SqlColumnNumber>7</SqlColumnNumber>
+</Property>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DataLocation>^CSVtoFHIR.RM.LabTest.RecordD</DataLocation>
+<DefaultData>RecordDefaultData</DefaultData>
+<IdLocation>^CSVtoFHIR.RM.LabTest.RecordD</IdLocation>
+<IndexLocation>^CSVtoFHIR.RM.LabTest.RecordI</IndexLocation>
+<StreamLocation>^CSVtoFHIR.RM.LabTest.RecordS</StreamLocation>
+<ExtentSize>2000000</ExtentSize>
+<Data name="RecordDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>PatientId</Value>
+</Value>
+<Value name="3">
+<Value>%Source</Value>
+</Value>
+<Value name="4">
+<Value>display</Value>
+</Value>
+<Value name="5">
+<Value>value</Value>
+</Value>
+<Value name="6">
+<Value>unit</Value>
+</Value>
+<Value name="7">
+<Value>EffectiveDateTime</Value>
+</Value>
+<Value name="8">
+<Value>%ParentBatch</Value>
+</Value>
+<Value name="9">
+<Value>code</Value>
+</Value>
+</Data>
+</Storage>
+
+<Property name="%ParentBatch">
+<Type>CSVtoFHIR.RM.LabTestBatch</Type>
+<Cardinality>one</Cardinality>
+<Inverse>Records</Inverse>
+<Relationship>1</Relationship>
+</Property>
+
+<Index name="%ParentBatchIdx">
+<Properties>%ParentBatch</Properties>
+</Index>
+
+<Parameter name="RECORDMAPGENERATED">
+<Default>1</Default>
+</Parameter>
+</Class>
+
+
+<Class name="CSVtoFHIR.RM.LabTest">
+<Description>
+RECORDMAP: Modified during compilation of RecordMap 'CSVtoFHIR.RM.LabTest'
+on 2024-02-22 at 14:00:34.903 [2024-02-22 05:00:34.903 UTC]
+by user SuperUser</Description>
+<Super>EnsLib.RecordMap.RecordMap,,%JSON.Adaptor</Super>
+<TimeChanged>66892,50434.904551744</TimeChanged>
+<TimeCreated>66290,63769.7760183</TimeCreated>
+
+<Method name="GetObject">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Method to retrieve a record from a stream or device. This method will be generated based on the
+structure of the RecordMap. For testing purposes, a file name may be passed in the pStream argument.]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,*pObject:%RegisteredObject,pTimeout:%Numeric=-1,&pLookAhead:%String="",pLabelFound:%Boolean=0]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Try {
+		Set tStatus = $$$OK
+		Set pObject = $$$NULLOREF
+		If '$IsObject(pStream) {
+			Set tFilename = pStream
+			Set pStream = ##class(%IO.FileStream).%New()
+			Do pStream.Open(tFilename,,pTimeout,"utf-8", .tStatus)
+			If $$$ISERR(tStatus) Quit
+		}
+		Set tObjectName = $parameter($this,"OBJECTNAME")
+		Set tObject = $classmethod(tObjectName,"%New")
+		If '$IsObject(tObject) {
+			Set tStatus = $$$ERROR($$$CannotCreateObject,tObjectName)
+			Quit
+		}
+		Set tObject.%Source = pStream.Name
+		Set tGetTopFields = $parameter(tObject,"INCLUDETOPFIELDS")
+		If pStream.AtEnd && (""=pLookAhead) {
+			Set tStatus = $$$ERROR($$$EnsRecordMapErrStreamAtEnd, pStream.Name)
+			Quit
+		}
+		Set pStream.CharEncoding = "utf-8"
+
+		#; Parse incoming stream
+		Set tStatus = ..GetRecord(pStream, tObject, tGetTopFields, pTimeout, .pLookAhead, pLabelFound)
+		If $$$ISERR(tStatus) Quit
+	}
+	Catch ex {
+		Set tStatus = ex.AsStatus()
+	}
+	If $$$ISERR(tStatus) { Set pObject = $$$NULLOREF }
+	Else { Set pObject = tObject }
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="PutObject">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Method to write a record to a stream or device. This method will be generated based on the
+structure of the RecordMap. For testing purposes, a file name may be passed in the pStream argument.]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pFlush:%Boolean=1,&pPadArray:%String]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Try {
+		Set tStatus = $$$OK
+		If '$IsObject(pStream) {
+			Set tFilename = pStream
+			Set pStream = ##class(%IO.FileStream).%New()
+			Do pStream.Open(tFilename,"WAE",,"utf-8", .tStatus)
+			If $$$ISERR(tStatus) Quit
+		}
+		Set tHasTopFields = $parameter(pObject,"INCLUDETOPFIELDS")
+		Set pStream.CharEncoding = "utf-8"
+
+		Set tStatus = ..PutRecord(pStream, pObject, tHasTopFields, .pPadArray)
+		If $$$ISERR(tStatus) Quit
+		If pFlush Do pStream.Flush(.tStatus)
+		If $$$ISERR(tStatus) Quit
+	}
+	Catch ex {
+		Set tStatus = ex.AsStatus()
+	}
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Parameter name="OBJECTNAME">
+<Default>CSVtoFHIR.RM.LabTest.Record</Default>
+</Parameter>
+
+<Method name="GetRecord">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Internal helper method to perform parse of incoming data]]></Description>
+<Internal>1</Internal>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pGetTopFields:%Boolean,pTimeout:%Numeric,&pLookAhead:%String="",pLabelFound:%Boolean=0]]></FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Set tStatus = $$$OK
+	If pLabelFound { Set tRecLabel = "" } 
+	Else { Set tRecLabel = "" } 
+	Set tStatus = ..chunkRecord(pStream, .tRecordData, .tCharCount, "", pTimeout, $char(10), tRecLabel, .pLookAhead, $char(34), 0)
+	If $$$ISERR(tStatus) Quit tStatus
+	Set tMaxLocal = $$$MaxLocalLength
+	Set tRecordData("charcount") = +$get(tCharCount)
+	Set tCurrChunk = 1
+	Set tTopPiece = 1
+	Set tCurrSep = 1
+	Set tStrings = 1
+	Set tCurrString = ""
+	Set tSeps = $listbuild($char(44))
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Else {
+		Set tCurrString = tRecordData(tCurrChunk)
+		Set tCurrPiece = 1
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.PatientId = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.code = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.display = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.value = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.unit = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.EffectiveDateTime = tCurrString
+	}
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="PutRecord">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Internal helper method to output object to a stream]]></Description>
+<Internal>1</Internal>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pHasTopFields:%Boolean,&pPadArray:%String]]></FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Set tStatus = $$$OK
+	Set tmpStream=##class(%Stream.TmpBinary).%New()
+	Do tmpStream.Write($select(pHasTopFields: ..Escape(pObject.PatientId, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.code, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.display, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.value, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.unit, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.EffectiveDateTime, $lb($char(44)),"quote",$char(34)),1: ""))
+	Set tStatus = tmpStream.Write($char(10))
+	If $$$ISERR(tStatus) Quit tStatus
+	Do pStream.CopyFrom(tmpStream,,0,.tStatus)
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="GetGeneratedClasses">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>*pClasses:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Kill pClasses
+	Set pClasses("CSVtoFHIR.RM.LabTest.Record")=""
+	Set pClasses("CSVtoFHIR.RM.LabTestBatch")=""
+	Set pClasses($classname())=""
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="getIdentifier">
+<ClassMethod>1</ClassMethod>
+<CodeMode>expression</CodeMode>
+<FormalSpec/>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[""
+]]></Implementation>
+</Method>
+
+<Method name="getType">
+<ClassMethod>1</ClassMethod>
+<CodeMode>expression</CodeMode>
+<FormalSpec/>
+<ReturnType>EnsLib.RecordMap.Model.DataType.RecordType</ReturnType>
+<Implementation><![CDATA["delimited"
+]]></Implementation>
+</Method>
+
+<XData name="RecordMap">
+<XMLNamespace>http://www.intersystems.com/Ensemble/RecordMap</XMLNamespace>
+<Data><![CDATA[
+<Record xmlns="http://www.intersystems.com/Ensemble/RecordMap" name="CSVtoFHIR.RM.LabTest" type="delimited" char_encoding="utf-8" targetClassname="CSVtoFHIR.RM.LabTest.Record" batchClass="CSVtoFHIR.RM.LabTestBatch" complexBatchManaged="0" padFromLeft="0" recordTerminator="\x0a" escaping="quote" escapeSequence="&quot;" allowEmbeddedRecordTerminator="0" allowEarlyTerminator="0">
+  <Separators>
+    <Separator>,</Separator>
+  </Separators>
+  <Field name="PatientId" datatype="%String" sqlColumn="2">
+  </Field>
+  <Field name="code" datatype="%String" sqlColumn="3">
+  </Field>
+  <Field name="display" datatype="%String" sqlColumn="4">
+  </Field>
+  <Field name="value" datatype="%String" sqlColumn="5">
+  </Field>
+  <Field name="unit" datatype="%String" sqlColumn="6">
+  </Field>
+  <Field name="EffectiveDateTime" datatype="%String" sqlColumn="7">
+  </Field>
+</Record>
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="CSVtoFHIR.RM.LabTestBatch">
+<Description>
+RECORDMAP: Modified during compilation of RecordMap 'CSVtoFHIR.RM.LabTest'
+on 2024-02-22 at 14:00:34.899 [2024-02-22 05:00:34.899 UTC]
+by user SuperUser</Description>
+<Super>%Library.Persistent,EnsLib.RecordMap.SimpleBatch</Super>
+<TimeChanged>66892,50434.900115823</TimeChanged>
+<TimeCreated>66290,63861.5971997</TimeCreated>
+
+<Parameter name="XMLNAME">
+<Default>CSVtoFHIR_RM_LabTestBatch</Default>
+</Parameter>
+
+<Parameter name="RECORDMAPGENERATED">
+<Default>1</Default>
+</Parameter>
+
+<Parameter name="BatchHeader">
+</Parameter>
+
+<Parameter name="HeaderTerm">
+</Parameter>
+
+<Parameter name="BatchTrailer">
+</Parameter>
+
+<Parameter name="TrailerTerm">
+</Parameter>
+
+<Parameter name="IgnoreLeadingData">
+<Default>0</Default>
+</Parameter>
+
+<Property name="Records">
+<Type>CSVtoFHIR.RM.LabTest.Record</Type>
+<Cardinality>many</Cardinality>
+<Inverse>%ParentBatch</Inverse>
+<Relationship>1</Relationship>
+</Property>
+
+<Trigger name="OnDelete">
+<Code>	Set %ok = ..deleteRecords({ID})
+</Code>
+<Event>DELETE</Event>
+</Trigger>
+
+<Parameter name="XMLTYPE">
+<Default>CSVtoFHIR_RM_LabTestBatch</Default>
+</Parameter>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DataLocation>^CSVtoFHIR.RM.LabTestBatchD</DataLocation>
+<DefaultData>LabTestBatchDefaultData</DefaultData>
+<IdLocation>^CSVtoFHIR.RM.LabTestBatchD</IdLocation>
+<IndexLocation>^CSVtoFHIR.RM.LabTestBatchI</IndexLocation>
+<StreamLocation>^CSVtoFHIR.RM.LabTestBatchS</StreamLocation>
+<Data name="LabTestBatchDefaultData">
+<Structure>listnode</Structure>
+<Subscript/>
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>%Source</Value>
+</Value>
+<Value name="3">
+<Value>BatchHeader</Value>
+</Value>
+<Value name="4">
+<Value>BatchTrailer</Value>
+</Value>
+</Data>
+</Storage>
+</Class>
+
+
+<Class name="CSVtoFHIR.RM.Patient.Record">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+RECORDMAP: Generated from RecordMap 'CSVtoFHIR.RM.Patient'
+on 2024-02-22 at 14:00:11.621 [2024-02-22 05:00:11.621 UTC]
+by user SuperUser]]></Description>
+<ProcedureBlock>1</ProcedureBlock>
+<Super>%Persistent,%XML.Adaptor,Ens.Request,EnsLib.RecordMap.Base,%JSON.Adaptor</Super>
+<TimeChanged>66892,50411.626929454</TimeChanged>
+<TimeCreated>66892,50411.621591385</TimeCreated>
+<Inheritance>right</Inheritance>
+
+<Parameter name="INCLUDETOPFIELDS">
+<Default>1</Default>
+</Parameter>
+
+<Property name="PatientId">
+<Type>%String</Type>
+<SqlColumnNumber>2</SqlColumnNumber>
+</Property>
+
+<Property name="HospitalID">
+<Type>%String</Type>
+<SqlColumnNumber>3</SqlColumnNumber>
+</Property>
+
+<Property name="LastName">
+<Type>%String</Type>
+<SqlColumnNumber>4</SqlColumnNumber>
+</Property>
+
+<Property name="FirstName">
+<Type>%String</Type>
+<SqlColumnNumber>5</SqlColumnNumber>
+</Property>
+
+<Property name="LastNameKana">
+<Type>%String</Type>
+<SqlColumnNumber>6</SqlColumnNumber>
+</Property>
+
+<Property name="FirstNameKana">
+<Type>%String</Type>
+<SqlColumnNumber>7</SqlColumnNumber>
+</Property>
+
+<Property name="DOB">
+<Type>%String</Type>
+<SqlColumnNumber>8</SqlColumnNumber>
+</Property>
+
+<Property name="Gender">
+<Type>%String</Type>
+<SqlColumnNumber>9</SqlColumnNumber>
+</Property>
+
+<Property name="postalCode">
+<Type>%String</Type>
+<SqlColumnNumber>10</SqlColumnNumber>
+</Property>
+
+<Property name="state">
+<Type>%String</Type>
+<SqlColumnNumber>11</SqlColumnNumber>
+</Property>
+
+<Property name="city">
+<Type>%String</Type>
+<SqlColumnNumber>12</SqlColumnNumber>
+</Property>
+
+<Property name="line">
+<Type>%String</Type>
+<SqlColumnNumber>13</SqlColumnNumber>
+</Property>
+
+<Property name="Phone">
+<Type>%String</Type>
+<SqlColumnNumber>14</SqlColumnNumber>
+</Property>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DataLocation>^CSVtoFHIR.RM.Patient.RecordD</DataLocation>
+<DefaultData>RecordDefaultData</DefaultData>
+<IdLocation>^CSVtoFHIR.RM.Patient.RecordD</IdLocation>
+<IndexLocation>^CSVtoFHIR.RM.Patient.RecordI</IndexLocation>
+<StreamLocation>^CSVtoFHIR.RM.Patient.RecordS</StreamLocation>
+<ExtentSize>2000000</ExtentSize>
+<Data name="RecordDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>PatientId</Value>
+</Value>
+<Value name="3">
+<Value>%Source</Value>
+</Value>
+<Value name="4">
+<Value>LastName</Value>
+</Value>
+<Value name="5">
+<Value>FirstName</Value>
+</Value>
+<Value name="6">
+<Value>LastNameKana</Value>
+</Value>
+<Value name="7">
+<Value>FirstNameKana</Value>
+</Value>
+<Value name="8">
+<Value>DOB</Value>
+</Value>
+<Value name="9">
+<Value>Gender</Value>
+</Value>
+<Value name="10">
+<Value>postalCode</Value>
+</Value>
+<Value name="11">
+<Value>state</Value>
+</Value>
+<Value name="12">
+<Value>city</Value>
+</Value>
+<Value name="13">
+<Value>line</Value>
+</Value>
+<Value name="14">
+<Value>Phone</Value>
+</Value>
+<Value name="15">
+<Value>HospitalID</Value>
+</Value>
+</Data>
+</Storage>
+
+<Parameter name="RECORDMAPGENERATED">
+<Default>1</Default>
+</Parameter>
+</Class>
+
+
+<Class name="CSVtoFHIR.RM.Patient">
+<Description>
+RECORDMAP: Modified during compilation of RecordMap 'CSVtoFHIR.RM.Patient'
+on 2024-02-22 at 14:00:11.631 [2024-02-22 05:00:11.631 UTC]
+by user SuperUser</Description>
+<Super>EnsLib.RecordMap.RecordMap</Super>
+<TimeChanged>66892,50411.632336721</TimeChanged>
+<TimeCreated>66290,50917.8293762</TimeCreated>
+
+<Method name="GetObject">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Method to retrieve a record from a stream or device. This method will be generated based on the
+structure of the RecordMap. For testing purposes, a file name may be passed in the pStream argument.]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,*pObject:%RegisteredObject,pTimeout:%Numeric=-1,&pLookAhead:%String="",pLabelFound:%Boolean=0]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Try {
+		Set tStatus = $$$OK
+		Set pObject = $$$NULLOREF
+		If '$IsObject(pStream) {
+			Set tFilename = pStream
+			Set pStream = ##class(%IO.FileStream).%New()
+			Do pStream.Open(tFilename,,pTimeout,"utf-8", .tStatus)
+			If $$$ISERR(tStatus) Quit
+		}
+		Set tObjectName = $parameter($this,"OBJECTNAME")
+		Set tObject = $classmethod(tObjectName,"%New")
+		If '$IsObject(tObject) {
+			Set tStatus = $$$ERROR($$$CannotCreateObject,tObjectName)
+			Quit
+		}
+		Set tObject.%Source = pStream.Name
+		Set tGetTopFields = $parameter(tObject,"INCLUDETOPFIELDS")
+		If pStream.AtEnd && (""=pLookAhead) {
+			Set tStatus = $$$ERROR($$$EnsRecordMapErrStreamAtEnd, pStream.Name)
+			Quit
+		}
+		Set pStream.CharEncoding = "utf-8"
+
+		#; Parse incoming stream
+		Set tStatus = ..GetRecord(pStream, tObject, tGetTopFields, pTimeout, .pLookAhead, pLabelFound)
+		If $$$ISERR(tStatus) Quit
+	}
+	Catch ex {
+		Set tStatus = ex.AsStatus()
+	}
+	If $$$ISERR(tStatus) { Set pObject = $$$NULLOREF }
+	Else { Set pObject = tObject }
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="PutObject">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Method to write a record to a stream or device. This method will be generated based on the
+structure of the RecordMap. For testing purposes, a file name may be passed in the pStream argument.]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pFlush:%Boolean=1,&pPadArray:%String]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Try {
+		Set tStatus = $$$OK
+		If '$IsObject(pStream) {
+			Set tFilename = pStream
+			Set pStream = ##class(%IO.FileStream).%New()
+			Do pStream.Open(tFilename,"WAE",,"utf-8", .tStatus)
+			If $$$ISERR(tStatus) Quit
+		}
+		Set tHasTopFields = $parameter(pObject,"INCLUDETOPFIELDS")
+		Set pStream.CharEncoding = "utf-8"
+
+		Set tStatus = ..PutRecord(pStream, pObject, tHasTopFields, .pPadArray)
+		If $$$ISERR(tStatus) Quit
+		If pFlush Do pStream.Flush(.tStatus)
+		If $$$ISERR(tStatus) Quit
+	}
+	Catch ex {
+		Set tStatus = ex.AsStatus()
+	}
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Parameter name="OBJECTNAME">
+<Default>CSVtoFHIR.RM.Patient.Record</Default>
+</Parameter>
+
+<Method name="GetRecord">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Internal helper method to perform parse of incoming data]]></Description>
+<Internal>1</Internal>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pGetTopFields:%Boolean,pTimeout:%Numeric,&pLookAhead:%String="",pLabelFound:%Boolean=0]]></FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Set tStatus = $$$OK
+	If pLabelFound { Set tRecLabel = "" } 
+	Else { Set tRecLabel = "" } 
+	Set tStatus = ..chunkRecord(pStream, .tRecordData, .tCharCount, "", pTimeout, $char(10), tRecLabel, .pLookAhead, $char(34), 0)
+	If $$$ISERR(tStatus) Quit tStatus
+	Set tMaxLocal = $$$MaxLocalLength
+	Set tRecordData("charcount") = +$get(tCharCount)
+	Set tCurrChunk = 1
+	Set tTopPiece = 1
+	Set tCurrSep = 1
+	Set tStrings = 1
+	Set tCurrString = ""
+	Set tSeps = $listbuild($char(44))
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Else {
+		Set tCurrString = tRecordData(tCurrChunk)
+		Set tCurrPiece = 1
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.PatientId = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.HospitalID = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.LastName = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.FirstName = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.LastNameKana = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.FirstNameKana = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.DOB = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.Gender = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.postalCode = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.state = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.city = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.line = tCurrString
+	}
+	If '$data(tRecordData(tCurrChunk, "block")) {
+		Set tCurrString = $piece(tRecordData(tCurrChunk), $char(44), tTopPiece)
+	}
+	Do ..checkMerge(.tCurrChunk, .tRecordData, .tCurrString, $char(44), .tTopPiece)
+	If pGetTopFields {
+		Set pObject.Phone = tCurrString
+	}
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="PutRecord">
+<Description><![CDATA[
+THIS IS GENERATED CODE. DO NOT EDIT.<br/>
+Internal helper method to output object to a stream]]></Description>
+<Internal>1</Internal>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pStream:%IO.DeviceStream,pObject:%RegisteredObject,pHasTopFields:%Boolean,&pPadArray:%String]]></FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Set tStatus = $$$OK
+	Set tmpStream=##class(%Stream.TmpBinary).%New()
+	Do tmpStream.Write($select(pHasTopFields: ..Escape(pObject.PatientId, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.HospitalID, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.LastName, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.FirstName, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.LastNameKana, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.FirstNameKana, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.DOB, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.Gender, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.postalCode, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.state, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.city, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.line, $lb($char(44)),"quote",$char(34)),1: ""))
+	Do tmpStream.Write($char(44) _ $select(pHasTopFields: ..Escape(pObject.Phone, $lb($char(44)),"quote",$char(34)),1: ""))
+	Set tStatus = tmpStream.Write($char(10))
+	If $$$ISERR(tStatus) Quit tStatus
+	Do pStream.CopyFrom(tmpStream,,0,.tStatus)
+	Quit tStatus
+]]></Implementation>
+</Method>
+
+<Method name="GetGeneratedClasses">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>*pClasses:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Kill pClasses
+	Set pClasses("CSVtoFHIR.RM.Patient.Record")=""
+	Set pClasses($classname())=""
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="getIdentifier">
+<ClassMethod>1</ClassMethod>
+<CodeMode>expression</CodeMode>
+<FormalSpec/>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[""
+]]></Implementation>
+</Method>
+
+<Method name="getType">
+<ClassMethod>1</ClassMethod>
+<CodeMode>expression</CodeMode>
+<FormalSpec/>
+<ReturnType>EnsLib.RecordMap.Model.DataType.RecordType</ReturnType>
+<Implementation><![CDATA["delimited"
+]]></Implementation>
+</Method>
+
+<XData name="RecordMap">
+<XMLNamespace>http://www.intersystems.com/Ensemble/RecordMap</XMLNamespace>
+<Data><![CDATA[
+<Record xmlns="http://www.intersystems.com/Ensemble/RecordMap" name="CSVtoFHIR.RM.Patient" type="delimited" char_encoding="utf-8" targetClassname="CSVtoFHIR.RM.Patient.Record" complexBatchManaged="0" padFromLeft="0" recordTerminator="\x0a" escaping="quote" escapeSequence="&quot;" allowEmbeddedRecordTerminator="0" allowEarlyTerminator="0">
+  <Separators>
+    <Separator>,</Separator>
+  </Separators>
+  <Field name="PatientId" datatype="%String" sqlColumn="2">
+  </Field>
+  <Field name="HospitalID" datatype="%String" sqlColumn="3">
+  </Field>
+  <Field name="LastName" datatype="%String" sqlColumn="4">
+  </Field>
+  <Field name="FirstName" datatype="%String" sqlColumn="5">
+  </Field>
+  <Field name="LastNameKana" datatype="%String" sqlColumn="6">
+  </Field>
+  <Field name="FirstNameKana" datatype="%String" sqlColumn="7">
+  </Field>
+  <Field name="DOB" datatype="%String" sqlColumn="8">
+  </Field>
+  <Field name="Gender" datatype="%String" sqlColumn="9">
+  </Field>
+  <Field name="postalCode" datatype="%String" sqlColumn="10">
+  </Field>
+  <Field name="state" datatype="%String" sqlColumn="11">
+  </Field>
+  <Field name="city" datatype="%String" sqlColumn="12">
+  </Field>
+  <Field name="line" datatype="%String" sqlColumn="13">
+  </Field>
+  <Field name="Phone" datatype="%String" sqlColumn="14">
+  </Field>
+</Record>
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="CSVtoFHIR.Transform">
+<TimeChanged>66357,54824.131942</TimeChanged>
+<TimeCreated>66290,58339.0901844</TimeCreated>
+
+<Method name="Patient">
+<Description>
+FHIRTemplate.Patientクラスをテンプレートクラスとして利用する</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[source:CSVtoFHIR.RM.Patient.Record,&patient:FHIRTemplate.Patient]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+    #dim ex As %Exception.AbstractException
+    set status=$$$OK
+    try {
+        //レコードマップのインスタンスをJSONストリームに変換
+        $$$ThrowOnError(source.%JSONExportToStream(.jstream))
+        //JSONストリームからダイナミックオブジェクトに変換
+        set in={}.%FromJSON(jstream.Read())
+        set in.DOB=$ZDATEH(in.DOB,8)
+
+        //FHIRTemplate.Patientのインスタンス生成時にデータ割り当て
+        set patient=##class(FHIRTemplate.Patient).%New(in)
+        //Patient.addressのAddressタイプにデータ割り当て
+        set address=##class(FHIRTemplate.DataType.Address).%New(in)
+        set patient.Address=address
+
+		//GenderをFHIR R4 Patientリソースに合わせて変更
+        set patient.Gender=$select(in.Gender="M":1,1:2)
+
+    }
+    catch ex {
+        set status=ex.AsStatus()
+    }
+    return status
+]]></Implementation>
+</Method>
+
+<Method name="Observation">
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[source:CSVtoFHIR.RM.LabTest.Record,&observation:FHIRCustom.ObservationBodyMeasurement,&aux:%String]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+    #dim ex As %Exception.AbstractException
+    set status=$$$OK
+    Try {
+        //レコードマップのインスタンスをJSONストリームに変換
+        $$$ThrowOnError(source.%JSONExportToStream(.jstream))
+        //JSONストリームからダイナミックオブジェクトに変換
+        set in={}.%FromJSON(jstream.Read()) 
+
+        //Obseration用テンプレートクラスのインスタンス生成
+        set observation=##class(FHIRCustom.ObservationBodyMeasurement).%New()
+   
+   		// Categoryの設定
+   		set category=##class(FHIRCustom.CodeableConcept.ObservationCategory).GetByCode("exam")
+   		do observation.Category.Insert(category)
+
+        // Codeの作成
+        set code=##class(FHIRCustom.CodeableConcept.BodyMeasurementCode).%New()
+        set code.code=in.code
+        set code.display=in.display
+        set observation.Code=code
+        
+        // EffectiveDateTimeの設定
+        set observation.EffectiveDateTime=$ZDATETIMEH(in.EffectiveDateTime,3)
+        
+        // valueQuantityの設定
+        set valueQuantity=##class(FHIRTemplate.DataType.Quantity).%New()
+        set valueQuantity.value=+in.value
+        set valueQuantity.unit=in.unit
+        set valueQuantity.code=code.code
+        set observation.ValueQuantity=valueQuantity
+
+        //reference（Observation.subjectにPatientのリソースIDをセット）
+		if $get(aux("PatientMap",source.PatientId))'="" {
+			set observation.PatientResourceId=aux("PatientMap",source.PatientId)
+        }
+		else {
+			set observation.PatientResourceId="Patient/"_source.PatientId
+		}
+    }
+    Catch ex {
+        Set status=ex.AsStatus()
+    }
+    return status
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CSVtoFHIR.Utils">
+<Super>Ens.Rule.FunctionSet</Super>
+<TimeChanged>66191,51915.671784</TimeChanged>
+<TimeCreated>65457,57965.140982</TimeCreated>
+
+<Method name="Validate">
+<Description>
+in : データ変換後のJSON</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>in:%DynamicObject</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	#dim ex As %Exception.AbstractException
+	set tSC=$$$OK
+	try {
+		set schema = ##class(HS.FHIRServer.Schema).LoadSchema("HL7v40")
+		set resourceValidator = ##class(HS.FHIRServer.Util.ResourceValidator).%New(schema)
+		do resourceValidator.ValidateResource(in) 
+	}catch ex {
+		set tSC=ex.AsStatus()
+	}
+	quit tSC
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="FHIRCustom.BundleTransaction">
+<Super>FHIRTemplate.Bundle</Super>
+<TimeChanged>66357,43071.9270755</TimeChanged>
+<TimeCreated>66286,39718.3804643</TimeCreated>
+
+<XData name="Template">
+<Description>
+type=transaction</Description>
+<MimeType>application/json</MimeType>
+<Data><![CDATA[
+{
+  "resourceType": "#(..#ResourceType)#",
+  "type": "transaction",
+  "entry": [
+  	"#(..resource(FHIRTemplate.Bundle.entry))#"
+  	]
+}
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="FHIRCustom.CodeableConcept.BodyMeasurementCode">
+<Super>FHIRTemplate.DataType.CodeableConceptBase</Super>
+<TimeChanged>66290,78894.9106659</TimeChanged>
+<TimeCreated>66290,78894.9106659</TimeCreated>
+
+<Parameter name="CodeSystem">
+<Default>http://www.isjhospital.com/Observation_Code</Default>
+</Parameter>
+</Class>
+
+
+<Class name="FHIRCustom.CodeableConcept.ObservationCategory">
+<Description>
+Observation.category</Description>
+<Super>%Persistent,FHIRTemplate.Util.CodeTable,FHIRTemplate.DataType.CodeableConceptBase</Super>
+<TimeChanged>66290,67074.2146246</TimeChanged>
+<TimeCreated>66290,67074.2146246</TimeCreated>
+
+<Parameter name="CodeSystem">
+<Default>http://jpfhir.jp/fhir/Common/ValueSet/bodyMeasurement-code</Default>
+</Parameter>
+
+<Index name="IDKeyIdx">
+<IdKey>1</IdKey>
+<Properties>code</Properties>
+<Unique>1</Unique>
+</Index>
+
+<XData name="InsertCode">
+<Description>
+コードは以下PDFを参考にしています。
+https://std.jpfhir.jp/stddoc/eDischargeSummaryFHIR_v1x.pdf</Description>
+<MimeType>application/json</MimeType>
+<Data><![CDATA[
+{ "data":[
+    "social-history;社会生活歴",
+    "vital-signs;バイタルサイン",
+    "imaging;画像検査",
+    "laboratory;検査室検査",
+    "survey;調査・評価",
+    "exam;身体検査・観察",
+    "therapy;非介入治療による観察結果",
+    "activity;身体活動記録"
+  ] 
+}
+]]></Data>
+</XData>
+
+<Storage name="Default">
+<Type>%Storage.Persistent</Type>
+<DataLocation>^FHIRCustomC353.Observation2BCAD</DataLocation>
+<DefaultData>ObservationCategoryDefaultData</DefaultData>
+<IdLocation>^FHIRCustomC353.Observation2BCAD</IdLocation>
+<IndexLocation>^FHIRCustomC353.Observation2BCAI</IndexLocation>
+<StreamLocation>^FHIRCustomC353.Observation2BCAS</StreamLocation>
+<ExtentSize>8</ExtentSize>
+<Data name="ObservationCategoryDefaultData">
+<Value name="1">
+<Value>%%CLASSNAME</Value>
+</Value>
+<Value name="2">
+<Value>display</Value>
+</Value>
+</Data>
+<Property name="%%CLASSNAME">
+<Selectivity>100.0000%</Selectivity>
+<AverageFieldSize>2</AverageFieldSize>
+</Property>
+<Property name="%%ID">
+<Selectivity>1</Selectivity>
+<AverageFieldSize>10.38</AverageFieldSize>
+</Property>
+<Property name="code">
+<Selectivity>1</Selectivity>
+<AverageFieldSize>10.38</AverageFieldSize>
+</Property>
+<Property name="display">
+<Selectivity>12.5000%</Selectivity>
+<AverageFieldSize>14.75</AverageFieldSize>
+</Property>
+<SQLMap name="IDKeyIdx">
+<BlockCount>-4</BlockCount>
+</SQLMap>
+</Storage>
+</Class>
+
+
+<Class name="FHIRCustom.ObservationBodyMeasurement">
+<Super>FHIRTemplate.Observation</Super>
+<TimeChanged>66292,65485.02</TimeChanged>
+<TimeCreated>66290,70219.4424345</TimeCreated>
+
+<Property name="Category">
+<Type>FHIRCustom.CodeableConcept.ObservationCategory</Type>
+<Collection>list</Collection>
+</Property>
+
+<Property name="Code">
+<Type>FHIRCustom.CodeableConcept.BodyMeasurementCode</Type>
+</Property>
+
+<XData name="Template">
+<Description>
+JSON出力する際のテンプレート
+https://jpfhir.jp/jpcoreV1/ObservationCommon を参考に作成
+JSONの値の文字列に#(..プロパティ名)#または#(..#パラメータ名)#を指定することで
+プロパティの値をJSON形式で出力できます。
+プロパティの型がJSONTemplate.Baseを継承したクラスの場合、
+そのクラスのテンプレートからJSON出力します。</Description>
+<MimeType>application/json</MimeType>
+<Data><![CDATA[
+{
+  "resourceType": "#(..#ResourceType)#",
+  "category": [ "#(..Category)#" ],
+  "code": "#(..Code)#",
+  "effectiveDateTime": "#(..EffectiveDateTime)#",
+  "subject":  { "reference":"#(..PatientResourceId)#" },
+  "status": "final",
+  "valueQuantity": "#(..ValueQuantity(FHIRTemplate.DataType.Quantity))#"
+}
+]]></Data>
+</XData>
+
+<Property name="PatientResourceId">
+<Type>%String</Type>
+</Property>
+</Class>
+</Export>

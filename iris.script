@@ -1,0 +1,45 @@
+set $namespace="%SYS"
+//事前定義ユーザのパスワード設定を期限切れにしない
+Do ##class(Security.Users).UnExpireUserPasswords("*")
+//日本語ロケールのインストール
+Do ##class(Config.NLS.Locales).Install("jpuw")
+
+//FHIR用設定(ネームスペース：TEST)
+set $namespace="HSLIB"
+Set appKey = "/csp/healthshare/test/fhir/r4"
+Set strategyClass = "HS.FHIRServer.Storage.Json.InteractionsStrategy"
+Set metadataPackages = $lb("hl7.fhir.r4.core@4.0.1","hl7.fhir.us.core@3.1.0")
+do ##class(HS.Util.Installer.Foundation).Install("TEST")
+//作成したネームスペースに移動
+Set $namespace = "TEST"
+//FHIR有効化ネームスペース用に必要な構成要素をインストール
+Do ##class(HS.FHIRServer.Installer).InstallNamespace()
+//カレントネームスペースにFHIRサーバインストール
+Do ##class(HS.FHIRServer.Installer).InstallInstance(appKey, strategyClass, metadataPackages)
+
+set $namespace="TEST"
+//FHIRサーバ作成用クラスインポートと実行 (2回コンパイル実施しないと通らないので2回インポート実行)
+do $system.OBJ.Load("/opt/app/src/xml/JSONTemplate-v1.1.xml","ck",,1)
+do $system.OBJ.Load("/opt/app/src/xml/JSONTemplate-v1.1.xml","ck",,1)
+
+//CSVからFHIRへの変換用の設定（コンテナ用サンプル：RecordMap定義の設定がWindowsと異なる）
+do $system.OBJ.Load("/opt/app/src/xml/Step2-All2.xml","ck",,1)
+
+//Facade用設定
+do $system.OBJ.LoadDir("/opt/app/src/ISJHospital","ck",,1)
+do $system.OBJ.LoadDir("/opt/app/src/FHIRCustom","ck",,1)
+do $system.OBJ.LoadDir("/opt/app/src/FHIRFacade","ck",,1)
+
+//ISJHospitalのデータ作成
+do ##class(ISJHospital.Patient).CreateData()
+
+//ObservationのcodeをMedis標準マスタに合わせる場合のデータ登録
+do ##class(FHIRCustom.DB.BodyMeasurementCode).ImportData("/opt/app/src/kansatsu-ver3.6.txt")
+
+
+
+//プロダクション自動開始設定
+do ##class(Ens.Director).SetAutoStart("CSVtoFHIR.Production")
+
+//データの作成
+write ##class(FHIRCustom.CodeableConcept.ObservationCategory).GenerateData()

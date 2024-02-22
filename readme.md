@@ -1,16 +1,19 @@
 # FHIRリソース作成例（ファサード／リポジトリ）
 
-＜ご紹介内容＞
+**ご紹介内容**
 
-- FHIRファサードの例
+1. FHIR用JSONテンプレートエンジンご紹介
+
+    《FHIRファサード体験コースで行っている内容を使ってご紹介します》
 
     Patientテーブルに患者基本情報（ISJHospital.Patient）、Obervationテーブル（ISJHospital.Observation）に身長・体重の情報があるテーブルを用意しています。
+    ![](/assets/ISJHospitalTables.png)
     
     SQLで作成したいリソース（デモではPatientリソース）のデータを抽出し、FHIRリソースを作成する流れをご覧いただきます。
     
     また、特定のPatientに関連する全情報（デモでは、Patientリソースに紐づくObservatioリソース）を一括で返すBundleリソースの作成例もご覧いただきます（メソッドをご覧いただきます）。
-
-- FHIRリポジトリ活用例
+    
+2. FHIRリポジトリ活用例
 
     ファサードと同様に、PatientとObservationを利用した例でご紹介します。
 
@@ -23,7 +26,7 @@
     の2通りの流れをご覧いただきます。
 
 
-どちらの流れもFHIRリソースではない情報からFHIRリソースを作成しています。FHIRリソースのJSONを作成する流れでは、日本法人で作成した「サンプル：JSONテンプレートエンジン」を利用しています。
+どちらの流れもFHIRリソースではない情報からFHIRリソースを作成しています。FHIRリソースのJSONを作成する流れでは、日本法人で作成した **[サンプル：JSONテンプレートエンジン](https://github.com/Intersystems-jp/JSONTemplate)** を利用しています。
 
 ※製品標準に用意しているクラス群ではありませんので、利用される場合はサンプルのインポートが必要です。
 
@@ -81,8 +84,8 @@ do p.OutputToDevice()
 ```
 （ファイルに上記JSONがあるとします）
 ```
-set file="C:\WorkSpace\Training-FHIRFacadeEx\export\patientsample.json"
-set json={}.%FromJSON(file)
+set file="/opt/app/src/patientsample.json"
+set json={}.%FromJSONFile(file)
 zwrite json
 set p=##class(FHIRTemplate.Patient).%New(json)
 do p.OutputToDevice()

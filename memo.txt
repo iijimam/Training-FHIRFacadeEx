@@ -1,0 +1,16 @@
+//データ削除
+set repoInstance=##class(HS.FHIRServer.RepoInstance).FindByUrl("/csp/healthshare/test/fhir/r4")
+set repoManager=##class(HS.FHIRServer.Storage.Json.RepoManager).getInstance(repoInstance.repo)
+set options("deleteDataOnly")=1  //これ大事
+do repoManager.DeleteService(repoInstance.serviceId,.options)
+
+
+//FHIRCustom.DB.BodyMeasurementCode.cls　のデータ登録必要であれば以下実行
+/*
+//codeを以下の方法で取得する場合はいる（マスター用意して照らし合わせてコードとる場合）
+set code=##class(FHIRCustom.CodeableConcept.BodyMeasurementCode).GetByCode(in.display,in.unit)      
+*/
+do ##class(FHIRCustom.DB.BodyMeasurementCode).ImportData("/opt/app/src/kansatsu-ver3.6.txt")
+
+// CSVtoFHIRのデモの前に FHIRCustom.facade-ObservationBodyMeasurement.clsをコンパイルする
+// Observationのsubjectのfacadeの時と変わる（既存リソースとの紐づけなのでUUIDじゃない）。

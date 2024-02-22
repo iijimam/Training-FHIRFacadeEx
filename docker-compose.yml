@@ -1,0 +1,16 @@
+version: '3.7'
+services:
+  iris1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: irisfhir
+    ports:
+      # webserver/management portal port
+      - "62773:52773"
+      # superserver default port
+      - "61773:1972"
+    volumes: ["./samples:/opt/app/samples","./src:/opt/app/src"]
+          
+    environment:
+    - TZ=JST-9

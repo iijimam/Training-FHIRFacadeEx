@@ -9,7 +9,6 @@ ClassMethod Test(ByRef json As %DynamicObject) As %Status
         set input={}
         set input.PID="498374"
         $$$ThrowOnError(..Bundle(input,.json,.streamid))
-        //write streamid
     }
     catch ex {
         set status=ex.AsStatus()
@@ -61,7 +60,7 @@ ClassMethod Patient(input As %DynamicObject, ByRef json As %DynamicObject, ByRef
         //検証実行のため、QuickStreamに保存したBundleリソースをJSONのダイナミックオブジェクトに変換
         set json={}.%FromJSON(patientQS)
         */
-        
+
         //patientインスタンスをダイナミックオブジェクトに出力
         $$$ThrowOnError(patient.OutputToDynamicObject(.json))
         //検証実行
@@ -137,9 +136,8 @@ ClassMethod Bundle(input As %DynamicObject, ByRef json As %DynamicObject, ByRef 
         set json={}.%FromJSON(bundleQS)
         */
 
-        //作成したbundleインスタンスをダイナミックオブジェクトに出力
+        //bundleインスタンスをダイナミックオブジェクトに出力
         $$$ThrowOnError(bundle.OutputToDynamicObject(.json))
-        $$$ThrowOnError(bundle.OutputToFile("C:\WorkSpace\Training-FHIRFacadeEx\export\test.json"))
         //検証実行
         $$$ThrowOnError(##class(FHIRFacade.SetResourceData).Validate(json))
 
