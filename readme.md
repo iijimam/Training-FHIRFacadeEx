@@ -1,17 +1,18 @@
 # FHIR JSONテンプレートエンジンのご紹介
 
-1. FHIR用JSONテンプレートエンジンを使ってFHIRリソースに変換するコード例
+![](/assets/FacadeAndRepo.png)
 
-    《FHIRファサード体験コースで行っている内容を使ってご紹介します》
+1. 《パターン2》　FHIR用JSONテンプレートエンジンを使ってFHIRリソースに変換するコード例
+
+    （FHIRファサード体験コースで行っている内容を使ってご紹介します）
 
     Patientテーブルに患者基本情報（ISJHospital.Patient）、Obervationテーブル（ISJHospital.Observation）に身長・体重の情報があるテーブルを用意しています。
-    ![](/assets/ISJHospitalTables.png)
-    
+
     SQLで作成したいリソース（デモではPatientリソース）のデータを抽出し、FHIRリソースを作成する流れをご覧いただきます。
     
     また、特定のPatientに関連する全情報（デモでは、Patientリソースに紐づくObservatioリソース）を一括で返すBundleリソースの作成例もご覧いただきます（メソッドをご覧いただきます）。
     
-2. FHIRリポジトリ活用例
+2. 《パターン1》　FHIRリポジトリ活用例
 
     ファサードと同様に、PatientとObservationを利用した例でご紹介します。
 
@@ -21,10 +22,10 @@
 
     「患者IDと通院時の身長体重情報が含まれるCSVを入力し、既存のPatientリソースと関連付けを行ったObservationリソースを作成→リポジトリへ登録」
 
-    の2通りの流れをご覧いただきます。
 
+上記内容について、どちらも**FHIRリソースではない情報からFHIRリソースを作成しています。** 
 
-どちらの流れもFHIRリソースではない情報からFHIRリソースを作成しています。FHIRリソースのJSONを作成する流れでは、日本法人で作成した **[サンプル：JSONテンプレートエンジン](https://github.com/Intersystems-jp/JSONTemplate)** を利用しています。
+FHIRリソース用JSONを生成する部分は、どちらもパタンも同様の方法を使用しています＝日本法人で作成した **[サンプル：JSONテンプレートエンジン](https://github.com/Intersystems-jp/JSONTemplate)** を利用しています。
 
 ※製品標準に用意しているクラス群ではありませんので、利用される場合はサンプルのインポートが必要です。
 
@@ -124,7 +125,7 @@ do p.OutputToDevice()
 
 - REST：Patientに紐づくObservationを含めたBundleのGET
 
-    localhost:52778/facade/Patient/498374/everything
+    localhost:62773/facade/Patient/498374/everything
 
 - PatientとObservation入りBundle作成（[メソッド](/src/FHIRFacade/BuildResource.cls)）
     ```

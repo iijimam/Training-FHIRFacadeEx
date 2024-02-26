@@ -4,6 +4,15 @@ Do ##class(Security.Users).UnExpireUserPasswords("*")
 //日本語ロケールのインストール
 Do ##class(Config.NLS.Locales).Install("jpuw")
 
+//EndPoint
+set webName = "/facade"
+set webProperties("DispatchClass") = "FHIRFacade.REST"
+set webProperties("NameSpace") = "TEST"
+set webProperties("Enabled") = 1
+set webProperties("AutheEnabled") = 96
+set webProperties("MatchRoles")=":%All"
+set st=##class(Security.Applications).Create(webName, .webProperties)
+
 //FHIR用設定(ネームスペース：TEST)
 set $namespace="HSLIB"
 Set appKey = "/csp/healthshare/test/fhir/r4"
