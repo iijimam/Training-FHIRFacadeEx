@@ -39,7 +39,7 @@ DBに登録のあるPatientテーブルの情報を利用して、FHIRのPatient
 
 - 実行例）PatientIDを指定してPatientリソースをGETする
 
-    localhost:52778/facade/Patient/498374
+    localhost:62773/facade/Patient/498374
 
 
 ### GET要求で返信するFHIRリソースを作成する仕組みについて
@@ -221,7 +221,7 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     - FHIRリポジトリにPatientリソースがないことを確認
     
-        localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Patient
+        localhost:62773/csp/healthshare/test/fhir/r4/Patient
     
     - CSVファイル取り込み
 
@@ -229,12 +229,18 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     - FHIRリポジトリ確認
 
-        localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Patient
+        localhost:62773/csp/healthshare/test/fhir/r4/Patient
 
 
 
 
 - 身長・体重が含まれるCSVからObservationリソースを登録する流れ（複数一括登録）
+
+    <font color="red"> **以下の流れを試す前に、Observation用テンプレートクラスをCSVからFHIRへの変換用に変更してください。** </font>
+
+    【方法】IRISに接続した状態で、[csvtofhir-ObservationBodyMeasurement.cls](src/FHIRCustom/csvtofhir-ObservationBodyMeasurement.cls)クラスをCtrl＋Sで保存します（インポート＋コンパイルが実行されます）。
+
+
 
     ![](/assets/CSVtoFHIR-Observation.png)
 
@@ -249,7 +255,7 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     実行するGET要求のURL例は以下の通りです。
 
-    例：`localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Patient?identifier=urn:oid:1.2.392.100495.20.3.51.11311234567|191922`
+    例：`localhost:62773/csp/healthshare/test/fhir/r4/Patient?identifier=urn:oid:1.2.392.100495.20.3.51.11311234567|191922`
     
     クエリパラメータの identifierを利用します。（ご参考：クエリパラメータの指定方法についても、FHIR標準スキーマで提示されています：[PatientのSearchParameter](https://www.hl7.org/fhir/patient.html#search)）
 
@@ -259,7 +265,7 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     - FHIRリポジトリにObservationリソースがないことを確認
     
-        localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Observation
+        localhost:62773/csp/healthshare/test/fhir/r4/Observation
     
     - CSVファイル取り込み
 
@@ -279,7 +285,7 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     - FHIRリポジトリ確認（Observationが4件返る予定）
 
-        localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Observation
+        localhost:62773/csp/healthshare/test/fhir/r4/Observation
 
         Observationリソース登録時、PatientリソースのリソースIDを以下のように設定しています。（リポジトリ内で一意となる値を指定します。同一リポジトリ内のリファレンス設定の場合、Webサーバやエンドポイントの記述は省略できます）
 
@@ -291,5 +297,5 @@ Referenceには、リポジトリモデルの場合 **対象となるリソー�
 
     - Patientリソースとの関連を確認（リソースID=1の患者に紐づくObservationが登録されたか確認：3件返る予定）
 
-        localhost:52778/csp/healthshare/r4fhirnamespace/fhir/r4/Patient/1/$everything
+        localhost:62773/csp/healthshare/test/fhir/r4/Patient/1/$everything
 
