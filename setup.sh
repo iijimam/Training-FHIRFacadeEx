@@ -1,4 +1,7 @@
 #!/bin/bash
 chmod 777 samples
-chmod 777 samples/In
-chmod 777 samples/LabTestIn
+cd samples
+mkdir In
+mkdir LabTestIn
+chmod 777 In
+chmod 777 LabTestIn
